@@ -1,40 +1,42 @@
 extern crate winapi;
 
-use std::ffi::CString;
 use std::ffi::CStr;
+use std::ffi::CString;
+use std::io::{Error, ErrorKind, BufRead, Read, Write};
+use std::{mem, fs, io};
 use std::ptr::null_mut;
-use std::mem;
-use std::io::{Error, ErrorKind};
+use std::fs::read;
+use serde::{Serialize, Deserialize};
 
-use winapi::um::processthreadsapi::PROCESS_INFORMATION;
-use winapi::um::processthreadsapi::STARTUPINFOA;
-use winapi::um::processthreadsapi::CreateProcessA;
-use winapi::um::processthreadsapi::OpenProcess;
-use winapi::um::shlobj::SHGetSpecialFolderPathA;
+use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess, PROCESS_INFORMATION, STARTUPINFOA};
+use winapi::um::shlobj::{SHGetSpecialFolderPathA, CSIDL_PERSONAL};
+use winapi::shared::minwindef::{FALSE, MAX_PATH, TRUE};
+use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
+use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROCESS_TERMINATE};
+use winapi::um::psapi::{GetModuleFileNameExA};
+use winapi::shared::ntdef::{HANDLE};
+use winapi::um::handleapi::{CloseHandle};
 
-use winapi::um::shlobj::CSIDL_PROGRAM_FILESX86;
-use winapi::shared::minwindef::FALSE;
-use winapi::shared::minwindef::TRUE;
-use winapi::shared::minwindef::MAX_PATH;
-
-use winapi::um::tlhelp32::PROCESSENTRY32;
-use winapi::um::tlhelp32::TH32CS_SNAPPROCESS;
-use winapi::um::tlhelp32::CreateToolhelp32Snapshot;
-use winapi::um::tlhelp32::Process32First;
-use winapi::um::tlhelp32::Process32Next;
-
-use winapi::um::winnt::PROCESS_QUERY_INFORMATION;
-use winapi::um::winnt::PROCESS_VM_READ;
-
-use winapi::um::psapi::GetModuleFileNameExA;
-
-use winapi::um::handleapi::CloseHandle;
-use winapi::shared::ntdef::HANDLE;
-
-fn convert_to_string(input: * const std::os::raw::c_char) -> String
+#[derive(Default, Serialize, Deserialize, Debug)]
+struct Account
 {
-    unsafe 
-    {
+    nickname: String,
+    username: String,
+    password: String,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+struct Configuration
+{
+    steam_path: String,
+    accounts: Vec<Account>,
+}
+
+const CONFIGURATION_FILE_NAME: &str = "\\steam_account_manager.cfg";
+
+fn convert_to_string(input: *const std::os::raw::c_char) -> String
+{
+    unsafe {
         let converted_string = CStr::from_ptr(input);
         let converted_string = converted_string.to_str().unwrap();
         let converted_string = converted_string.trim_matches(char::from(0));
@@ -49,13 +51,12 @@ fn get_running_steam_process() -> std::result::Result<String, Error>
     let mut entry: PROCESSENTRY32 = unsafe { mem::zeroed() };
     entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
 
-    unsafe 
-    {
+    unsafe {
         // Get our snapshot...
         let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
         // Get our first entry...
-        if Process32First(snapshot, &mut entry) == TRUE 
+        if Process32First(snapshot, &mut entry) == TRUE
         {
             // Enumerate through all our processes...
             while Process32Next(snapshot, &mut entry) == TRUE
@@ -67,17 +68,24 @@ fn get_running_steam_process() -> std::result::Result<String, Error>
                 let is_steam = process_name == "Steam.exe";
 
                 // Continue the loop if it is not Steam...
-                if !is_steam { continue; }
+                if !is_steam {
+                    continue;
+                }
 
                 ////////////////////////////////////
-   
-                println!("Found Steam; attempting to fetch additional information...");
 
                 // Attempt to open our process for query...
-                let process_handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, entry.th32ProcessID);
-                
+                let process_handle = OpenProcess(
+                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE,
+                    FALSE,
+                    entry.th32ProcessID,
+                );
+
                 // Check if null...
-                if process_handle.is_null() { return Err(Error::last_os_error()); }
+                if process_handle.is_null()
+                {
+                    return Err(Error::last_os_error());
+                }
 
                 ////////////////////////////////////
 
@@ -85,19 +93,23 @@ fn get_running_steam_process() -> std::result::Result<String, Error>
                 let mut process_path = [0i8; MAX_PATH];
 
                 // Get our module file name...
-                let ret = GetModuleFileNameExA(process_handle, null_mut(), process_path.as_mut_ptr(), MAX_PATH as u32);
+                let ret = GetModuleFileNameExA(
+                    process_handle,
+                    null_mut(),
+                    process_path.as_mut_ptr(),
+                    MAX_PATH as u32,
+                );
 
                 // Cleanup!
                 CloseHandle(process_handle);
                 CloseHandle(snapshot);
 
-                if ret == 0 
-                { 
-                    return Err(Error::last_os_error()); 
+                if ret == 0
+                {
+                    return Err(Error::last_os_error());
                 }
-                else 
-                { 
-                    println!("Successfully located Steam executable!",);
+                else
+                {
                     return Ok(convert_to_string(process_path.as_mut_ptr()));
                 }
             }
@@ -107,47 +119,52 @@ fn get_running_steam_process() -> std::result::Result<String, Error>
         CloseHandle(snapshot);
     }
 
-    Err(Error::new(ErrorKind::NotFound, "Steam process couldn't be found...")) 
+    Err(
+        Error::new(
+            ErrorKind::NotFound,
+            "Steam process couldn't be found...",
+        )
+    )
 }
 
 /**
  * Finds the program files folder.
  */
-fn find_program_files() -> std::result::Result<String, Error>
+fn find_documents() -> std::result::Result<String, Error>
 {
     let mut max_path = [0i8; MAX_PATH];
 
-    let ret = unsafe 
-    {
-        SHGetSpecialFolderPathA(null_mut(), max_path.as_mut_ptr(), CSIDL_PROGRAM_FILESX86, TRUE)
+    let ret = unsafe {
+        SHGetSpecialFolderPathA(
+            null_mut(),
+            max_path.as_mut_ptr(),
+            CSIDL_PERSONAL,
+            TRUE,
+        )
     };
 
-    if ret == 0 
-    { 
-        Err(Error::last_os_error()) 
-    }
-    else 
+    if ret == 0
     {
-        Ok(convert_to_string(max_path.as_mut_ptr())) 
+        Err(Error::last_os_error())
+    }
+    else
+    {
+        Ok(convert_to_string(max_path.as_mut_ptr()))
     }
 }
 
 /**
  * Launches steam application.
  */
-fn launch_steam() -> std::result::Result<i32, Error>
+fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<i32, Error>
 {
-    let steam = get_running_steam_process().is_ok();
-    println!("{}", steam);  
-
-    // Our program files...
-    let program_files = find_program_files().unwrap();
-
     // Setup our launch arguments...
-    let arguments = CString::new(format!("{}\\Steam\\Steam.exe", program_files))
+    let shutdown_arguments = CString::new(format!("{} -shutdown", configuration.steam_path))
         .expect("Failed to convert CString...");
 
-    
+    let arguments = CString::new(format!("{} -login {} {}", configuration.steam_path, account.username, account.password))
+        .expect("Failed to convert CString...");
+
     // Setup our startup information and process information.
     let mut si: STARTUPINFOA = unsafe { mem::zeroed() };
     let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
@@ -156,34 +173,273 @@ fn launch_steam() -> std::result::Result<i32, Error>
     si.cb = mem::size_of::<STARTUPINFOA>() as u32;
 
     // Attempt to create the process...
-    let ret = unsafe 
+    let ret = unsafe
     {
+        while get_running_steam_process().is_ok()
+        {
+            println!("Waiting for Steam to close...");
+            CreateProcessA(
+                null_mut(),
+                shutdown_arguments.as_ptr() as *mut i8,
+                null_mut(),
+                null_mut(),
+                FALSE,
+                0,
+                null_mut(),
+                null_mut(),
+                &mut si,
+                &mut pi,
+            );
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
         CreateProcessA(
             null_mut(),
-            arguments.as_ptr() as *mut i8,     
-            null_mut(),          
-            null_mut(),        
+            arguments.as_ptr() as *mut i8,
+            null_mut(),
+            null_mut(),
             FALSE,
-            0, 
+            0,
             null_mut(),
             null_mut(),
             &mut si,
-            &mut pi 
+            &mut pi,
         )
     };
 
     // Check if our opening of the process was successful.
-    if ret == 0 
-    { 
-        Err(Error::last_os_error()) 
+    if ret == 0
+    {
+        Err(Error::last_os_error())
     }
-    else 
-    { 
-        Ok(ret) 
+    else
+    {
+        Ok(ret)
     }
 }
 
-fn main() {
-    launch_steam();
+fn first_time_setup() -> Configuration
+{
+    println!("Performing first time setup!");
 
+    loop {
+        let steam = get_running_steam_process();
+
+        if steam.is_err()
+        {
+            println!("Please launch Steam for the initial setup!");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+
+            continue;
+        }
+
+        let steam = steam.unwrap();
+
+        ///////////////////////////////////////////
+
+        println!("Located Steam! ({})", steam);
+
+        let mut configuration: Configuration = Default::default();
+        configuration.steam_path = steam;
+
+        ///////////////////////////////////////////
+
+        return configuration;
+    }
+}
+
+fn save_configuration(configuration: &Configuration) -> Result<(), Error>
+{
+    let documents_path = find_documents()?;
+    let path = format!("{}{}", documents_path, CONFIGURATION_FILE_NAME);
+
+    ///////////////////////////////////////
+
+    let serialized = serde_json::to_string(&configuration)?;
+    let write_to_file = fs::write(&path, serialized)?;
+
+    Ok(())
+}
+
+fn load_configuration() -> Result<Configuration, Error>
+{
+    let documents_path = find_documents()?;
+
+    ///////////////////////////////////////
+
+    let path = format!("{}{}", documents_path, CONFIGURATION_FILE_NAME);
+    let read_file = fs::read_to_string(&path);
+
+    // If first time setup...
+    if read_file.is_err()
+    {
+        // Run our first time setup...
+        let configuration = first_time_setup();
+
+        ////////////////////////////////////////
+
+        // Attempt to save our config...
+        let save_config = save_configuration(&configuration);
+        if save_config.is_err()
+        {
+            return Err(save_config.err().unwrap());
+        }
+
+        return Ok(configuration);
+    }
+
+    ///////////////////////////////////////
+
+    let read_string = read_file.unwrap();
+    let configuration = serde_json::from_str::<Configuration>(&read_string)?;
+
+    return Ok(configuration);
+}
+
+fn help()
+{
+    println!("Help:");
+    println!("----------------------------------");
+    println!("Editing an account: e or edit");
+    println!("Adding an account: a or add");
+    println!("Delete an account: d or delete");
+    println!("List account details: l or list");
+    println!("Quit: q or quit <id>");
+    println!("----------------------------------");
+}
+
+fn list(configuration: &Configuration)
+{
+    // Check if there aren't any accounts...
+    if configuration.accounts.len() == 0 { return; }
+
+    // Iterate through all our accounts printing the index and nickname...
+    for (i, account) in configuration.accounts.iter().enumerate()
+    {
+        println!("({}) {}", i, account.nickname);
+    }
+
+    // Seperating line...
+    println!("----------------------------------");
+}
+
+fn add(configuration: &mut Configuration)
+{
+    // Clear our screen.
+    print!("{}[2J", 27 as char);
+
+    ///////////////////////////////////////////
+
+    // Ask for nickname...
+    println!("Please choose a nickname:");
+    let nickname = get_input();
+
+    // Ask for username...
+    println!("Please choose a username:");
+    let username = get_input();
+
+    // Ask for password...
+    println!("Please choose a password:");
+    let password = get_input();
+
+    ////////////////////////////////////////
+
+    // Setup our account.
+    let account = Account { nickname, username, password };
+
+    // Push the account.
+    configuration.accounts.push(account);
+
+    // Attempt to save our config...
+    let save_config = save_configuration(&configuration);
+
+    // Clear our screen.
+    print!("{}[2J", 27 as char);
+}
+
+fn select(idx: usize, configuration: &Configuration)
+{
+    // Check if out of bounds...
+    if idx > configuration.accounts.len() || idx < 0
+    {
+        println!("The account with the index of ({}) does not exist...", idx);
+        return;
+    }
+
+    // Get our account...
+    let account = configuration.accounts.get(idx).unwrap();
+
+    // Launch our steam...
+    let attempt = launch_steam(&account, &configuration);
+
+    if attempt.is_err()
+    {
+        println!("Failed to launch Steam... {:?}", attempt.err());
+    }
+
+    // Inform user...
+    println!("Launching Steam for user ({})...", account.nickname);
+}
+
+fn get_input() -> String
+{
+    // Setup our input...
+    let mut input = String::with_capacity(256);
+
+    print!("> ");
+
+    // Flush our stdout...
+    io::stdout().flush();
+
+    // Read our line...
+    io::stdin().read_line(&mut input).unwrap();
+
+    // Return our string which is also trimmed.
+    String::from(input.trim())
+}
+
+fn start()
+{
+    // Get our configuration...
+    let mut configuration = load_configuration();
+
+    // Check if our configuration failed to load...
+    if configuration.is_err()
+    {
+        println!("{:?}", configuration.err());
+        io::stdin().read(&mut[0]).unwrap();
+        return;
+    }
+
+    // Unwrap our configuration...
+    let mut configuration = configuration.unwrap();
+
+    // List all our accounts...
+    list(&configuration);
+
+    loop {
+        let input = get_input();
+
+        match input.as_str() {
+            "help" | "h" => help(),
+            "add" | "a" => add(&mut configuration),
+            "quit" | "q" => break,
+            _ => {
+                let is_numeric = input.parse::<usize>();
+
+                match is_numeric {
+                    Ok(idx) => select(idx, &configuration),
+                    Err(e) => println!("Unknown command provided, use 'help' or 'h' to get more information..."),
+                }
+            },
+        }
+    }
+
+
+}
+
+fn main()
+{
+    start();
 }
