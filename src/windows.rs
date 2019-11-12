@@ -174,24 +174,36 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
 
     // Attempt to create the process...
     let ret = unsafe {
-        while get_running_steam_process().is_ok()
-            {
-                println!("Waiting for Steam to close...");
-                CreateProcessA(
-                    null_mut(),
-                    shutdown_arguments.as_ptr() as *mut i8,
-                    null_mut(),
-                    null_mut(),
-                    FALSE,
-                    0,
-                    null_mut(),
-                    null_mut(),
-                    &mut si,
-                    &mut pi,
-                );
+        let mut running_count = 0;
 
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
+        while get_running_steam_process().is_ok()
+        {
+            println!("Waiting for Steam to close...");
+            CreateProcessA(
+                null_mut(),
+                shutdown_arguments.as_ptr() as *mut i8,
+                null_mut(),
+                null_mut(),
+                FALSE,
+                0,
+                null_mut(),
+                null_mut(),
+                &mut si,
+                &mut pi,
+            );
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+
+            if running_count == 15
+            {
+                return Err(
+                    Error::new(
+                        ErrorKind::NotFound,
+                        "Failed to close Steam...",
+                    )
+                );
+            } else { running_count += 1; }
+        }
 
         CreateProcessA(
             null_mut(),
@@ -438,7 +450,8 @@ fn select(idx: usize, configuration: &Configuration)
 
     if attempt.is_err()
     {
-        println!("Failed to launch Steam... {:?}", attempt.err());
+        println!("Failed to launch Steam...");
+        return;
     }
 
     // Inform user...

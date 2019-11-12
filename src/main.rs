@@ -7,7 +7,7 @@ fn main()
     windows::start();
 }
 
-#[cfg(not(windows))]
+#[cfg(macos)]
 fn main()
 {
     println!("This program only runs on Windows.")

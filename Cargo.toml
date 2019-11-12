@@ -10,3 +10,6 @@ serde_json = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "shlobj", "tlhelp32", "handleapi", "winnt", "psapi"] }
+
+[target.'cfg(macos)'.dependencies]
+libproc = "0.7.1"
