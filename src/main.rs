@@ -29,6 +29,7 @@ struct Configuration
 {
     steam_path: String,
     accounts: Vec<Account>,
+    auto_close: bool,
 }
 
 const CONFIGURATION_FILE_NAME: &str = "\\steam_account_manager.cfg";
@@ -172,30 +173,13 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
     si.cb = mem::size_of::<STARTUPINFOA>() as u32;
 
     // Attempt to create the process...
-    let ret = unsafe
+    let ret = unsafe {
+        while get_running_steam_process().is_ok()
         {
-            while get_running_steam_process().is_ok()
-                {
-                    println!("Waiting for Steam to close...");
-                    CreateProcessA(
-                        null_mut(),
-                        shutdown_arguments.as_ptr() as *mut i8,
-                        null_mut(),
-                        null_mut(),
-                        FALSE,
-                        0,
-                        null_mut(),
-                        null_mut(),
-                        &mut si,
-                        &mut pi,
-                    );
-
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-
+            println!("Waiting for Steam to close...");
             CreateProcessA(
                 null_mut(),
-                arguments.as_ptr() as *mut i8,
+                shutdown_arguments.as_ptr() as *mut i8,
                 null_mut(),
                 null_mut(),
                 FALSE,
@@ -204,8 +188,24 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
                 null_mut(),
                 &mut si,
                 &mut pi,
-            )
-        };
+            );
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        CreateProcessA(
+            null_mut(),
+            arguments.as_ptr() as *mut i8,
+            null_mut(),
+            null_mut(),
+            FALSE,
+            0,
+            null_mut(),
+            null_mut(),
+            &mut si,
+            &mut pi,
+        )
+    };
 
     // Check if our opening of the process was successful.
     if ret == 0
@@ -241,6 +241,7 @@ fn first_time_setup() -> Configuration
 
         let mut configuration: Configuration = Default::default();
         configuration.steam_path = steam;
+        configuration.auto_close = true;
 
         ///////////////////////////////////////////
 
@@ -302,7 +303,8 @@ fn help()
     println!("----------------------------------");
     println!("Adding an account: a or add");
     println!("Delete an account: d or delete");
-    println!("Quit: q or quit <id>");
+    println!("Toggle auto-close: k or autoclose");
+    println!("Quit: q or quit");
     println!("----------------------------------");
 }
 
@@ -311,13 +313,16 @@ fn list(configuration: &Configuration)
     // Check if there aren't any accounts...
     if configuration.accounts.len() == 0 { return; }
 
+    // Separating line...
+    println!("----------------------------------");
+
     // Iterate through all our accounts printing the index and nickname...
     for (i, account) in configuration.accounts.iter().enumerate()
     {
         println!("({}) {}", i, account.nickname);
     }
 
-    // Seperating line...
+    // Separating line...
     println!("----------------------------------");
 }
 
@@ -361,6 +366,19 @@ fn remove(configuration: &mut Configuration)
     // Attempt to save our config...
     save_configuration(&configuration);
 }
+
+fn toggle_auto_close(configuration: &mut Configuration)
+{
+    // Push the account.
+    configuration.auto_close = !configuration.auto_close;
+
+    // Inform user...
+    println!("Auto-close was set to {}...", configuration.auto_close);
+
+    // Attempt to save our config...
+    save_configuration(&configuration);
+}
+
 
 fn add(configuration: &mut Configuration)
 {
@@ -425,6 +443,9 @@ fn select(idx: usize, configuration: &Configuration)
 
     // Inform user...
     println!("Launching Steam for user ({})...", account.nickname);
+
+    // Auto-close if enabled...
+    if configuration.auto_close { std::process::exit(0); }
 }
 
 fn get_input() -> String
@@ -470,6 +491,7 @@ fn start()
             "help" | "h" => help(),
             "list" | "l" => list(&configuration),
             "delete" | "d" => remove(&mut configuration),
+            "autoclose" | "k" => toggle_auto_close(&mut configuration),
             "add" | "a" => add(&mut configuration),
             "quit" | "q" => break,
             _ => {
