@@ -2,11 +2,10 @@ extern crate winapi;
 
 use std::ffi::CStr;
 use std::ffi::CString;
-use std::io::{Error, ErrorKind, BufRead, Read, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::{mem, fs, io};
-use std::ptr::null_mut;
-use std::fs::read;
 use serde::{Serialize, Deserialize};
+use std::ptr::{null_mut};
 
 use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess, PROCESS_INFORMATION, STARTUPINFOA};
 use winapi::um::shlobj::{SHGetSpecialFolderPathA, CSIDL_PERSONAL};
@@ -60,59 +59,59 @@ fn get_running_steam_process() -> std::result::Result<String, Error>
         {
             // Enumerate through all our processes...
             while Process32Next(snapshot, &mut entry) == TRUE
-            {
-                // Get our process name...
-                let process_name = convert_to_string(entry.szExeFile.as_mut_ptr());
-
-                // Check if it is Steam.exe
-                let is_steam = process_name == "Steam.exe";
-
-                // Continue the loop if it is not Steam...
-                if !is_steam {
-                    continue;
-                }
-
-                ////////////////////////////////////
-
-                // Attempt to open our process for query...
-                let process_handle = OpenProcess(
-                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE,
-                    FALSE,
-                    entry.th32ProcessID,
-                );
-
-                // Check if null...
-                if process_handle.is_null()
                 {
-                    return Err(Error::last_os_error());
+                    // Get our process name...
+                    let process_name = convert_to_string(entry.szExeFile.as_mut_ptr());
+
+                    // Check if it is Steam.exe
+                    let is_steam = process_name == "Steam.exe";
+
+                    // Continue the loop if it is not Steam...
+                    if !is_steam {
+                        continue;
+                    }
+
+                    ////////////////////////////////////
+
+                    // Attempt to open our process for query...
+                    let process_handle = OpenProcess(
+                        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE,
+                        FALSE,
+                        entry.th32ProcessID,
+                    );
+
+                    // Check if null...
+                    if process_handle.is_null()
+                    {
+                        return Err(Error::last_os_error());
+                    }
+
+                    ////////////////////////////////////
+
+                    // Setup our process path with MAX_PATH (wrong)...
+                    let mut process_path = [0i8; MAX_PATH];
+
+                    // Get our module file name...
+                    let ret = GetModuleFileNameExA(
+                        process_handle,
+                        null_mut(),
+                        process_path.as_mut_ptr(),
+                        MAX_PATH as u32,
+                    );
+
+                    // Cleanup!
+                    CloseHandle(process_handle);
+                    CloseHandle(snapshot);
+
+                    if ret == 0
+                    {
+                        return Err(Error::last_os_error());
+                    }
+                    else
+                    {
+                        return Ok(convert_to_string(process_path.as_mut_ptr()));
+                    }
                 }
-
-                ////////////////////////////////////
-
-                // Setup our process path with MAX_PATH (wrong)...
-                let mut process_path = [0i8; MAX_PATH];
-
-                // Get our module file name...
-                let ret = GetModuleFileNameExA(
-                    process_handle,
-                    null_mut(),
-                    process_path.as_mut_ptr(),
-                    MAX_PATH as u32,
-                );
-
-                // Cleanup!
-                CloseHandle(process_handle);
-                CloseHandle(snapshot);
-
-                if ret == 0
-                {
-                    return Err(Error::last_os_error());
-                }
-                else
-                {
-                    return Ok(convert_to_string(process_path.as_mut_ptr()));
-                }
-            }
         }
 
         // Close our handle...
@@ -174,13 +173,29 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
 
     // Attempt to create the process...
     let ret = unsafe
-    {
-        while get_running_steam_process().is_ok()
         {
-            println!("Waiting for Steam to close...");
+            while get_running_steam_process().is_ok()
+                {
+                    println!("Waiting for Steam to close...");
+                    CreateProcessA(
+                        null_mut(),
+                        shutdown_arguments.as_ptr() as *mut i8,
+                        null_mut(),
+                        null_mut(),
+                        FALSE,
+                        0,
+                        null_mut(),
+                        null_mut(),
+                        &mut si,
+                        &mut pi,
+                    );
+
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+
             CreateProcessA(
                 null_mut(),
-                shutdown_arguments.as_ptr() as *mut i8,
+                arguments.as_ptr() as *mut i8,
                 null_mut(),
                 null_mut(),
                 FALSE,
@@ -189,24 +204,8 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
                 null_mut(),
                 &mut si,
                 &mut pi,
-            );
-
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-
-        CreateProcessA(
-            null_mut(),
-            arguments.as_ptr() as *mut i8,
-            null_mut(),
-            null_mut(),
-            FALSE,
-            0,
-            null_mut(),
-            null_mut(),
-            &mut si,
-            &mut pi,
-        )
-    };
+            )
+        };
 
     // Check if our opening of the process was successful.
     if ret == 0
@@ -257,7 +256,7 @@ fn save_configuration(configuration: &Configuration) -> Result<(), Error>
     ///////////////////////////////////////
 
     let serialized = serde_json::to_string(&configuration)?;
-    let write_to_file = fs::write(&path, serialized)?;
+    fs::write(&path, serialized)?;
 
     Ok(())
 }
@@ -301,10 +300,8 @@ fn help()
 {
     println!("Help:");
     println!("----------------------------------");
-    println!("Editing an account: e or edit");
     println!("Adding an account: a or add");
     println!("Delete an account: d or delete");
-    println!("List account details: l or list");
     println!("Quit: q or quit <id>");
     println!("----------------------------------");
 }
@@ -324,24 +321,75 @@ fn list(configuration: &Configuration)
     println!("----------------------------------");
 }
 
+fn remove(configuration: &mut Configuration)
+{
+    ///////////////////////////////////////////
+
+    // List our items...
+    list(&configuration);
+
+    // Ask for nickname...
+    println!("Please choose an item to remove (:q to back):");
+    let idx = get_input();
+
+    // Check if a quit command was sent...
+    if idx == ":q" { return; }
+
+    let is_numeric = idx.parse::<usize>();
+
+    if is_numeric.is_err()
+    {
+        println!("Invalid input!");
+        return;
+    }
+
+    ////////////////////////////////////////
+
+    let idx = is_numeric.unwrap();
+
+    if idx > configuration.accounts.len()
+    {
+        println!("The account with the index of ({}) does not exist...", idx);
+        return;
+    }
+
+    ////////////////////////////////////////
+
+    // Push the account.
+    configuration.accounts.remove(idx);
+
+    // Attempt to save our config...
+    save_configuration(&configuration);
+}
+
 fn add(configuration: &mut Configuration)
 {
-    // Clear our screen.
-    print!("{}[2J", 27 as char);
-
     ///////////////////////////////////////////
 
     // Ask for nickname...
-    println!("Please choose a nickname:");
+    println!("Please choose a nickname (:q to back):");
     let nickname = get_input();
 
+    // Check if a quit command was sent...
+    if nickname == ":q" { return; }
+
+    ///////////////////////////////////////////
+
     // Ask for username...
-    println!("Please choose a username:");
+    println!("Please choose a username (:q to back):");
     let username = get_input();
 
+    // Check if a quit command was sent...
+    if username == ":q" { return; }
+
+    ///////////////////////////////////////////
+
     // Ask for password...
-    println!("Please choose a password:");
+    println!("Please choose a password (:q to back):");
     let password = get_input();
+
+    // Check if a quit command was sent...
+    if password == ":q" { return; }
 
     ////////////////////////////////////////
 
@@ -352,16 +400,13 @@ fn add(configuration: &mut Configuration)
     configuration.accounts.push(account);
 
     // Attempt to save our config...
-    let save_config = save_configuration(&configuration);
-
-    // Clear our screen.
-    print!("{}[2J", 27 as char);
+    save_configuration(&configuration);
 }
 
 fn select(idx: usize, configuration: &Configuration)
 {
     // Check if out of bounds...
-    if idx > configuration.accounts.len() || idx < 0
+    if idx > configuration.accounts.len()
     {
         println!("The account with the index of ({}) does not exist...", idx);
         return;
@@ -423,6 +468,8 @@ fn start()
 
         match input.as_str() {
             "help" | "h" => help(),
+            "list" | "l" => list(&configuration),
+            "delete" | "d" => remove(&mut configuration),
             "add" | "a" => add(&mut configuration),
             "quit" | "q" => break,
             _ => {
