@@ -344,7 +344,7 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
     }
 }
 
-fn first_time_setup() -> Configuration
+fn first_time_setup() -> Result<Configuration, Error>
 {
     println!("Performing first time setup!");
 
@@ -363,6 +363,29 @@ fn first_time_setup() -> Configuration
 
         ///////////////////////////////////////////
 
+        // We need to adjust the path and unzip our bootstrapper...
+        let steam_mac_bootstrapper = steam.0.replace("/Steam.app/Contents/MacOS/steam_osx", "/SteamMacBootstrapper.tar.gz");
+        let steam_mac_bootstrapper_path = steam_mac_bootstrapper.replace("/SteamMacBootstrapper.tar.gz", "/");
+
+        println!("Performing additional steps...");
+
+        // Untar our tar...
+        let launch = std::process::Command::new("tar")
+            .args(&["xf", steam_mac_bootstrapper.as_str(), "-C", steam_mac_bootstrapper_path.as_str()])
+            .output();
+
+        if launch.is_err()
+        {
+            return Err(
+                Error::new(
+                    ErrorKind::NotFound,
+                    "Failed to process SteamMacBootstrapper...",
+                )
+            );
+        }
+
+        ///////////////////////////////////////////
+
         println!("Located Steam! ({})", steam.0);
 
         let mut configuration: Configuration = Default::default();
@@ -371,7 +394,7 @@ fn first_time_setup() -> Configuration
 
         ///////////////////////////////////////////
 
-        return configuration;
+        return Ok(configuration);
     }
 }
 
@@ -401,7 +424,7 @@ fn load_configuration() -> Result<Configuration, Error>
     if read_file.is_err()
     {
         // Run our first time setup...
-        let configuration = first_time_setup();
+        let configuration = first_time_setup()?;
 
         ////////////////////////////////////////
 
