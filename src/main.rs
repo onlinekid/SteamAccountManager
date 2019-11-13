@@ -1,13 +1,21 @@
 #[cfg(windows)]
 extern crate winapi;
 
-use std::env;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::{Error, ErrorKind, Read, Write};
 use std::{mem, fs, io};
 use serde::{Serialize, Deserialize};
 use std::ptr::{null_mut};
+
+macro_rules! save {
+    ($name:expr) => {
+        match save_configuration(&$name) {
+            Ok(_) => { },
+            Err(_) => { println!("Failed to save configuration! Check write permissions!") },
+        };
+    }
+}
 
 #[cfg(target_os = "macos")]
 use libproc::libproc::proc_pid;
@@ -344,9 +352,12 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
     }
 }
 
-fn first_time_setup() -> Result<Configuration, Error>
+fn first_time_setup(configuration: Option<&mut Configuration>) -> Result<Option<Configuration>, Error>
 {
-    println!("Performing first time setup!");
+    if configuration.is_none()
+    {
+        println!("Performing first time setup!");
+    }
 
     loop {
         let steam = get_running_steam_process();
@@ -363,38 +374,59 @@ fn first_time_setup() -> Result<Configuration, Error>
 
         ///////////////////////////////////////////
 
-        // We need to adjust the path and unzip our bootstrapper...
-        let steam_mac_bootstrapper = steam.0.replace("/Steam.app/Contents/MacOS/steam_osx", "/SteamMacBootstrapper.tar.gz");
-        let steam_mac_bootstrapper_path = steam_mac_bootstrapper.replace("/SteamMacBootstrapper.tar.gz", "/");
+        #[cfg(target_os = "macos")] {
+            // We need to adjust the path and unzip our bootstrapper...
+            let steam_mac_bootstrapper = steam.0.replace("/Steam.app/Contents/MacOS/steam_osx", "/SteamMacBootstrapper.tar.gz");
+            let steam_mac_bootstrapper_path = steam_mac_bootstrapper.replace("/SteamMacBootstrapper.tar.gz", "/");
 
-        println!("Performing additional steps...");
+            println!("Performing additional steps...");
 
-        // Untar our tar...
-        let launch = std::process::Command::new("tar")
-            .args(&["xf", steam_mac_bootstrapper.as_str(), "-C", steam_mac_bootstrapper_path.as_str()])
-            .output();
+            // Untar our tar...
+            let launch = std::process::Command::new("tar")
+                .args(&["xf", steam_mac_bootstrapper.as_str(), "-C", steam_mac_bootstrapper_path.as_str()])
+                .output();
 
-        if launch.is_err()
-        {
-            return Err(
-                Error::new(
-                    ErrorKind::NotFound,
-                    "Failed to process SteamMacBootstrapper...",
-                )
-            );
+            if launch.is_err()
+            {
+                return Err(
+                    Error::new(
+                        ErrorKind::NotFound,
+                        "Failed to process SteamMacBootstrapper...",
+                    )
+                );
+            }
         }
 
         ///////////////////////////////////////////
 
         println!("Located Steam! ({})", steam.0);
 
+        // Check if we were provided a configuration
+        if configuration.is_some()
+        {
+            // Inform user.
+            println!("Updating Steam path configuration... ({})", steam.0);
+
+            // Unwrap it.
+            let configuration = configuration.unwrap();
+
+            // Update it.
+            configuration.steam_path = steam.0;
+
+            // Save.
+            save!(configuration);
+
+            // Return nothing...
+            return Ok(Option::None);
+        }
+
+        ///////////////////////////////////////////
+
         let mut configuration: Configuration = Default::default();
         configuration.steam_path = steam.0;
         configuration.auto_close = true;
 
-        ///////////////////////////////////////////
-
-        return Ok(configuration);
+        return Ok(Some(configuration));
     }
 }
 
@@ -424,7 +456,8 @@ fn load_configuration() -> Result<Configuration, Error>
     if read_file.is_err()
     {
         // Run our first time setup...
-        let configuration = first_time_setup()?;
+        let configuration = first_time_setup(Option::None)?;
+        let configuration = configuration.unwrap();
 
         ////////////////////////////////////////
 
@@ -446,16 +479,6 @@ fn load_configuration() -> Result<Configuration, Error>
     return Ok(configuration);
 }
 
-fn help()
-{
-    println!("Help:");
-    println!("----------------------------------");
-    println!("Adding an account: a or add");
-    println!("Delete an account: d or delete");
-    println!("Toggle auto-close: k or autoclose");
-    println!("Quit: q or quit");
-    println!("----------------------------------");
-}
 
 fn list(configuration: &Configuration)
 {
@@ -463,16 +486,15 @@ fn list(configuration: &Configuration)
     if configuration.accounts.len() == 0 { return; }
 
     // Separating line...
-    println!("----------------------------------");
+    println!("┌─────────────────────────────────────┐");
 
     // Iterate through all our accounts printing the index and nickname...
-    for (i, account) in configuration.accounts.iter().enumerate()
-        {
-            println!("({}) {}", i, account.nickname);
-        }
+    for (i, account) in configuration.accounts.iter().enumerate() {
+        println!("({}) {}", i, account.nickname);
+    }
 
     // Separating line...
-    println!("----------------------------------");
+    println!("└─────────────────────────────────────┘");
 }
 
 fn remove(configuration: &mut Configuration)
@@ -513,7 +535,7 @@ fn remove(configuration: &mut Configuration)
     configuration.accounts.remove(idx);
 
     // Attempt to save our config...
-    save_configuration(&configuration);
+    save!(configuration);
 }
 
 fn toggle_auto_close(configuration: &mut Configuration)
@@ -525,9 +547,8 @@ fn toggle_auto_close(configuration: &mut Configuration)
     println!("Auto-close was set to {}...", configuration.auto_close);
 
     // Attempt to save our config...
-    save_configuration(&configuration);
+    save!(configuration);
 }
-
 
 fn add(configuration: &mut Configuration)
 {
@@ -567,7 +588,7 @@ fn add(configuration: &mut Configuration)
     configuration.accounts.push(account);
 
     // Attempt to save our config...
-    save_configuration(&configuration);
+    save!(configuration);
 }
 
 fn select(idx: usize, configuration: &Configuration)
@@ -606,7 +627,7 @@ fn get_input() -> String
     print!("> ");
 
     // Flush our stdout...
-    io::stdout().flush();
+    io::stdout().flush().unwrap();
 
     // Read our line...
     io::stdin().read_line(&mut input).unwrap();
@@ -615,10 +636,29 @@ fn get_input() -> String
     String::from(input.trim())
 }
 
+fn help()
+{
+    println!("┌─ Help ─────────────────────────────┐");
+    println!("(a or add): Adding an account");
+    println!("(d or delete): Delete an account");
+    println!("(k or autoclose): Toggle auto-close");
+    println!("(r or retarget): Retarget Steams path (use if changed computers)");
+    println!("(q or quit): Quit");
+    println!("└─────────────────────────────────────┘");
+}
+
+fn retarget(configuration: &mut Configuration)
+{
+    match first_time_setup(Option::Some(configuration)) {
+        Ok(_) => println!("Successfully retarget configuration!"),
+        Err(_) => println!("Failed to retarget configuration!"),
+    }
+}
+
 fn start()
 {
     // Get our configuration...
-    let mut configuration = load_configuration();
+    let configuration = load_configuration();
 
     // Check if our configuration failed to load...
     if configuration.is_err()
@@ -634,14 +674,18 @@ fn start()
     // List all our accounts...
     list(&configuration);
 
+    // Perform an infinite loop.
     loop {
+        // Get input.
         let input = get_input();
 
+        // Match our command.
         match input.as_str() {
             "help" | "h" => help(),
             "list" | "l" => list(&configuration),
             "delete" | "d" => remove(&mut configuration),
             "autoclose" | "k" => toggle_auto_close(&mut configuration),
+            "retarget" | "r" => retarget(&mut configuration),
             "add" | "a" => add(&mut configuration),
             "quit" | "q" => break,
             _ => {
@@ -649,7 +693,7 @@ fn start()
 
                 match is_numeric {
                     Ok(idx) => select(idx, &configuration),
-                    Err(e) => println!("Unknown command provided, use 'help' or 'h' to get more information..."),
+                    Err(_) => println!("Unknown command provided, use 'help' or 'h' to get more information..."),
                 }
             },
         }
