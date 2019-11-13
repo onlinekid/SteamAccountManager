@@ -1,5 +1,7 @@
+#[cfg(windows)]
 extern crate winapi;
 
+use std::env;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::{Error, ErrorKind, Read, Write};
@@ -46,6 +48,10 @@ struct Configuration
     auto_close: bool,
 }
 
+#[cfg(target_os = "macos")]
+const CONFIGURATION_FILE_NAME: &str = "steam_account_manager.cfg";
+
+#[cfg(target_os = "windows")]
 const CONFIGURATION_FILE_NAME: &str = "\\steam_account_manager.cfg";
 
 fn convert_to_string(input: *const std::os::raw::c_char) -> String
@@ -67,12 +73,12 @@ fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
 
     if pids.is_err()
     {
-        Err(
+        return Err(
             Error::new(
                 ErrorKind::NotFound,
                 "Failed to fetch all running processes...",
             )
-        )
+        );
     }
 
     // Iterate throughout all our pids...
@@ -186,6 +192,12 @@ fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
     )
 }
 
+#[cfg(target_os = "macos")]
+fn find_documents() -> std::result::Result<String, Error>
+{
+    Ok(String::from(""))
+}
+
 /**
  * Finds the program files folder.
  */
@@ -214,7 +226,7 @@ fn find_documents() -> std::result::Result<String, Error>
 }
 
 #[cfg(target_os = "macos")]
-fn launch_steam2(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
+fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
 {
     loop {
         let steam = get_running_steam_process();
@@ -238,9 +250,19 @@ fn launch_steam2(account: &Account, configuration: &Configuration) -> std::resul
         }
     }
 
-    std::process::Command::new(configuration.steam_path)
-        .args(&["-login", account.username.as_str(), account.password])
+    let launch = std::process::Command::new(&configuration.steam_path)
+        .args(&["-login", account.username.as_str(), account.password.as_str()])
         .output();
+
+    if launch.is_err()
+    {
+        return Err(
+            Error::new(
+                ErrorKind::NotFound,
+                "Failed to launch Steam...",
+            )
+        );
+    }
 
     Ok(())
 }
@@ -341,7 +363,7 @@ fn first_time_setup() -> Configuration
 
         ///////////////////////////////////////////
 
-        println!("Located Steam! ({})", steam);
+        println!("Located Steam! ({})", steam.0);
 
         let mut configuration: Configuration = Default::default();
         configuration.steam_path = steam.0;
@@ -528,7 +550,7 @@ fn add(configuration: &mut Configuration)
 fn select(idx: usize, configuration: &Configuration)
 {
     // Check if out of bounds...
-    if idx > configuration.accounts.len()
+    if configuration.accounts.len() == 0 || idx > configuration.accounts.len()
     {
         println!("The account with the index of ({}) does not exist...", idx);
         return;
@@ -620,5 +642,5 @@ fn main()
 #[cfg(target_os = "macos")]
 fn main()
 {
-    println!("This program only runs on Windows.")
+    start();
 }
