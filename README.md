@@ -3,7 +3,7 @@
 This is a console-based application which manages your Steam accounts. It is supported for MacOS and Windows.
 It should run very well on low-end machines (quick startup times, etc).
 
-<img src="http://upx.me/i/IVhZ4zJ.png" />
+<img src="http://upx.me/i/3bwxXBO.png" />
 
 ### Build
 To build this application follow the steps below:
