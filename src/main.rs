@@ -1,12 +1,9 @@
 #[cfg(windows)]
 extern crate winapi;
 
-use std::ffi::CStr;
-use std::ffi::CString;
 use std::io::{Error, Read, Write};
-use std::{mem, fs, io};
+use std::{fs, io};
 use serde::{Serialize, Deserialize};
-use std::ptr::{null_mut};
 
 macro_rules! save {
     ($name:expr) => {
@@ -21,7 +18,19 @@ macro_rules! save {
 use libproc::libproc::proc_pid;
 
 #[cfg(target_os = "macos")]
+use std::io::ErrorKind;
+
+#[cfg(target_os = "macos")]
 use libproc::libproc::proc_pid::ProcType;
+
+#[cfg(windows)]
+use std::ffi::CStr;
+#[cfg(windows)]
+use std::ffi::CString;
+#[cfg(windows)]
+use std::ptr::{null_mut};
+#[cfg(windows)]
+use std::mem;
 
 #[cfg(windows)]
 use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess, PROCESS_INFORMATION, STARTUPINFOA};
@@ -70,6 +79,7 @@ const CONFIGURATION_FILE_NAME: &str = "steam_account_manager.cfg";
 #[cfg(target_os = "windows")]
 const CONFIGURATION_FILE_NAME: &str = "\\steam_account_manager.cfg";
 
+#[cfg(target_os = "windows")]
 fn convert_to_string(input: *const std::os::raw::c_char) -> String
 {
     unsafe {
