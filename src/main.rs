@@ -3,7 +3,7 @@ extern crate winapi;
 
 use std::ffi::CStr;
 use std::ffi::CString;
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, Read, Write};
 use std::{mem, fs, io};
 use serde::{Serialize, Deserialize};
 use std::ptr::{null_mut};
@@ -32,7 +32,7 @@ use winapi::shared::minwindef::{FALSE, MAX_PATH, TRUE};
 #[cfg(windows)]
 use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
 #[cfg(windows)]
-use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROCESS_TERMINATE};
+use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 #[cfg(windows)]
 use winapi::um::psapi::{GetModuleFileNameExA};
 #[cfg(windows)]
@@ -56,6 +56,14 @@ struct Configuration
     auto_close: bool,
 }
 
+#[allow(dead_code)]
+#[derive(Default)]
+struct SteamProcess
+{
+    steam_path: String,
+    pid: u32
+}
+
 #[cfg(target_os = "macos")]
 const CONFIGURATION_FILE_NAME: &str = "steam_account_manager.cfg";
 
@@ -74,7 +82,7 @@ fn convert_to_string(input: *const std::os::raw::c_char) -> String
 }
 
 #[cfg(target_os = "macos")]
-fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
+fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
 {
     // Attempt to find all pids...
     let pids = proc_pid::listpids(ProcType::ProcAllPIDS);
@@ -105,8 +113,11 @@ fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
             // Parse and format Steam's path...
             let process_path = process_path.replace("Contents/MacOS/steam_osx", "Contents/MacOS/Steam.app/Contents/MacOS/steam_osx");
 
-            // Return Steam's process path...
-            return Ok((process_path, pid));
+            // Return Steam's process path.
+            return Ok(SteamProcess {
+                steam_path: process_path,
+                pid
+            });
         }
     }
 
@@ -119,7 +130,7 @@ fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
 }
 
 #[cfg(windows)]
-fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
+fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
 {
     // Setup our process entry struct with the correct size...
     let mut entry: PROCESSENTRY32 = unsafe { mem::zeroed() };
@@ -128,76 +139,66 @@ fn get_running_steam_process() -> std::result::Result<(String, u32), Error>
     unsafe {
         // Get our snapshot...
         let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        let mut should_loop = Process32First(snapshot, &mut entry) == TRUE;
 
-        // Get our first entry...
-        if Process32First(snapshot, &mut entry) == TRUE
-        {
-            // Enumerate through all our processes...
-            while Process32Next(snapshot, &mut entry) == TRUE {
-                // Get our process name...
-                let process_name = convert_to_string(entry.szExeFile.as_mut_ptr());
+        // Enumerate through all our processes...
+        while should_loop {
+            // Get our process name...
+            let process_name = convert_to_string(entry.szExeFile.as_mut_ptr());
 
-                // Check if it is Steam.exe
-                let is_steam = process_name == "Steam.exe";
+            // Continue the loop if it is not Steam...
+            if process_name != "Steam.exe"
+            {
+                should_loop = Process32Next(snapshot, &mut entry) == TRUE;
+                continue;
+            }
 
-                // Continue the loop if it is not Steam...
-                if !is_steam {
-                    continue;
-                }
+            ////////////////////////////////////
 
-                ////////////////////////////////////
+            // Attempt to open our process for query...
+            let process_handle = OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                FALSE,
+                entry.th32ProcessID,
+            );
 
-                // Attempt to open our process for query...
-                let process_handle = OpenProcess(
-                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE,
-                    FALSE,
-                    entry.th32ProcessID,
-                );
+            // Check if null...
+            if process_handle.is_null()
+            {
+                should_loop = Process32Next(snapshot, &mut entry) == TRUE;
+                continue;
+            }
 
-                // Check if null...
-                if process_handle.is_null()
-                {
-                    return Err(Error::last_os_error());
-                }
+            ////////////////////////////////////
 
-                ////////////////////////////////////
+            // Setup our process path with MAX_PATH (wrong)...
+            let mut process_path = [0i8; MAX_PATH];
 
-                // Setup our process path with MAX_PATH (wrong)...
-                let mut process_path = [0i8; MAX_PATH];
+            // Get our module file name...
+            let ret = GetModuleFileNameExA(
+                process_handle,
+                null_mut(),
+                process_path.as_mut_ptr(),
+                MAX_PATH as u32,
+            );
 
-                // Get our module file name...
-                let ret = GetModuleFileNameExA(
-                    process_handle,
-                    null_mut(),
-                    process_path.as_mut_ptr(),
-                    MAX_PATH as u32,
-                );
+            // Clean up.
+            CloseHandle(process_handle);
+            CloseHandle(snapshot);
 
-                // Cleanup!
-                CloseHandle(process_handle);
-                CloseHandle(snapshot);
-
-                if ret == 0
-                {
-                    return Err(Error::last_os_error());
-                }
-                else
-                {
-                    return Ok((convert_to_string(process_path.as_mut_ptr()), entry.th32ProcessID));
-                }
+            match ret {
+                0 => return Err(Error::last_os_error()),
+                _ => return Ok(SteamProcess {
+                    steam_path: convert_to_string(process_path.as_mut_ptr()),
+                    pid: entry.th32ProcessID
+                })
             }
         }
 
-        // Close our handle...
         CloseHandle(snapshot);
     }
 
-    Err(
-        Error::new(
-            ErrorKind::NotFound,
-            "Steam process couldn't be found...",
-        )
-    )
+    Err(Error::last_os_error())
 }
 
 #[cfg(target_os = "macos")]
@@ -223,13 +224,9 @@ fn find_documents() -> std::result::Result<String, Error>
         )
     };
 
-    if ret == 0
-    {
-        Err(Error::last_os_error())
-    }
-    else
-    {
-        Ok(convert_to_string(max_path.as_mut_ptr()))
+    match ret {
+        0 => return Err(Error::last_os_error()),
+        _ => return Ok(convert_to_string(max_path.as_mut_ptr()))
     }
 }
 
@@ -244,7 +241,7 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
         println!("Waiting for Steam to close...");
 
         let kill = std::process::Command::new("kill")
-            .args(&["-9", format!("{}", steam.unwrap().1).as_str()])
+            .args(&["-9", format!("{}", steam.unwrap().pid).as_str()])
             .output();
 
         if kill.is_err()
@@ -275,35 +272,27 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
     Ok(())
 }
 
-/**
- * Launches steam application.
+/*
+
  */
+
 #[cfg(windows)]
 fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
 {
-    // Setup our launch arguments...
-    let shutdown_arguments = CString::new(format!("{} -shutdown", configuration.steam_path))
-        .expect("Failed to convert CString...");
+    // Wrapper for CreateProcessA.
+    let create_process_a = |arguments: &CString| -> std::result::Result<(), Error> {
+        // Setup our startup information and process information.
+        let mut si: STARTUPINFOA = unsafe { mem::zeroed() };
+        let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
 
-    let arguments = CString::new(format!("{} -login {} {}", configuration.steam_path, account.username, account.password))
-        .expect("Failed to convert CString...");
+        // Update the cb value.
+        si.cb = mem::size_of::<STARTUPINFOA>() as u32;
 
-    // Setup our startup information and process information.
-    let mut si: STARTUPINFOA = unsafe { mem::zeroed() };
-    let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
-
-    // Update the cb value.
-    si.cb = mem::size_of::<STARTUPINFOA>() as u32;
-
-    // Attempt to create the process...
-    let ret = unsafe {
-        let mut running_count = 0;
-
-        while get_running_steam_process().is_ok() {
-            println!("Waiting for Steam to close...");
+        // Attempt to create the process...
+        let ret = unsafe {
             CreateProcessA(
                 null_mut(),
-                shutdown_arguments.as_ptr() as *mut i8,
+                arguments.as_ptr() as *mut i8,
                 null_mut(),
                 null_mut(),
                 FALSE,
@@ -312,44 +301,39 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
                 null_mut(),
                 &mut si,
                 &mut pi,
-            );
+            )
+        };
 
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        match ret {
+            0 => return Err(Error::last_os_error()),
+            _ => return {
+                // Clean up handles...
+                unsafe {
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                }
 
-            if running_count == 15
-            {
-                return Err(
-                    Error::new(
-                        ErrorKind::NotFound,
-                        "Failed to close Steam...",
-                    )
-                );
-            } else { running_count += 1; }
+                Ok(())
+            }
         }
-
-        CreateProcessA(
-            null_mut(),
-            arguments.as_ptr() as *mut i8,
-            null_mut(),
-            null_mut(),
-            FALSE,
-            0,
-            null_mut(),
-            null_mut(),
-            &mut si,
-            &mut pi,
-        )
     };
 
-    // Check if our opening of the process was successful.
-    if ret == 0
-    {
-        Err(Error::last_os_error())
+    // Setup our launch arguments...
+    let shutdown_arguments = CString::new(format!("\"{}\" -shutdown", configuration.steam_path))?;
+    let arguments = CString::new(format!("\"{}\" -login {} {}", configuration.steam_path, account.username, account.password))?;
+
+    // Loop until Steam is closed.
+    while get_running_steam_process().is_ok() {
+        println!("Waiting for Steam to close...");
+
+        // Attempt to call Steam with the shutdown argument.
+        create_process_a(&shutdown_arguments)?;
+
+        // Sleep for one second.
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    else
-    {
-        Ok(())
-    }
+
+    create_process_a(&arguments)
 }
 
 fn first_time_setup(configuration: Option<&mut Configuration>) -> Result<Option<Configuration>, Error>
@@ -360,23 +344,22 @@ fn first_time_setup(configuration: Option<&mut Configuration>) -> Result<Option<
     }
 
     loop {
-        let steam = get_running_steam_process();
+        // Get our running steam process.
+        let steam = match get_running_steam_process() {
+            Ok(steam) => steam,
+            Err(_) => {
+                println!("Please launch Steam for the initial setup!");
+                std::thread::sleep(std::time::Duration::from_secs(1));
 
-        if steam.is_err()
-        {
-            println!("Please launch Steam for the initial setup!");
-            std::thread::sleep(std::time::Duration::from_secs(1));
-
-            continue;
-        }
-
-        let steam = steam.unwrap();
+                continue;
+            },
+        };
 
         ///////////////////////////////////////////
 
         #[cfg(target_os = "macos")] {
             // We need to adjust the path and unzip our bootstrapper...
-            let steam_mac_bootstrapper = steam.0.replace("/Steam.app/Contents/MacOS/steam_osx", "/SteamMacBootstrapper.tar.gz");
+            let steam_mac_bootstrapper = steam.steam_path.replace("/Steam.app/Contents/MacOS/steam_osx", "/SteamMacBootstrapper.tar.gz");
             let steam_mac_bootstrapper_path = steam_mac_bootstrapper.replace("/SteamMacBootstrapper.tar.gz", "/");
 
             println!("Performing additional steps...");
@@ -399,34 +382,33 @@ fn first_time_setup(configuration: Option<&mut Configuration>) -> Result<Option<
 
         ///////////////////////////////////////////
 
-        println!("Located Steam! ({})", steam.0);
+        println!("Located Steam! ({})", steam.steam_path);
 
-        // Check if we were provided a configuration
-        if configuration.is_some()
-        {
-            // Inform user.
-            println!("Updating Steam path configuration... ({})", steam.0);
+        // Handle our configuration.
+        match configuration {
+            None => {
+                let mut configuration: Configuration = Default::default();
+                configuration.steam_path = steam.steam_path;
+                configuration.auto_close = true;
 
-            // Unwrap it.
-            let configuration = configuration.unwrap();
+                return Ok(Some(configuration));
+            },
+            Some(configuration) => {
+                // Inform user.
+                println!("Updating Steam path configuration... ({})", steam.steam_path);
 
-            // Update it.
-            configuration.steam_path = steam.0;
+                // Update configuration.
+                configuration.steam_path = steam.steam_path;
 
-            // Save.
-            save!(configuration);
+                // Save it.
+                save!(configuration);
 
-            // Return nothing...
-            return Ok(Option::None);
+                // Return nothing...
+                return Ok(Option::None);
+            },
         }
 
         ///////////////////////////////////////////
-
-        let mut configuration: Configuration = Default::default();
-        configuration.steam_path = steam.0;
-        configuration.auto_close = true;
-
-        return Ok(Some(configuration));
     }
 }
 
@@ -483,7 +465,7 @@ fn load_configuration() -> Result<Configuration, Error>
 fn list(configuration: &Configuration)
 {
     // Check if there aren't any accounts...
-    if configuration.accounts.len() == 0 { return; }
+    if configuration.accounts.is_empty() { return; }
 
     // Separating line...
     println!("┌─────────────────────────────────────┐");
@@ -511,19 +493,17 @@ fn remove(configuration: &mut Configuration)
     // Check if a quit command was sent...
     if idx == ":q" { return; }
 
-    let is_numeric = idx.parse::<usize>();
+    let idx = match idx.parse::<usize>() {
+        Ok(idx) => idx,
+        Err(_) => {
+            println!("Invalid input!");
+            return;
+        },
+    };
 
-    if is_numeric.is_err()
-    {
-        println!("Invalid input!");
-        return;
-    }
+    /////////////////////////////////////////
 
-    ////////////////////////////////////////
-
-    let idx = is_numeric.unwrap();
-
-    if idx > configuration.accounts.len()
+    if idx >= configuration.accounts.len()
     {
         println!("The account with the index of ({}) does not exist...", idx);
         return;
@@ -594,7 +574,7 @@ fn add(configuration: &mut Configuration)
 fn select(idx: usize, configuration: &Configuration)
 {
     // Check if out of bounds...
-    if configuration.accounts.len() == 0 || idx > configuration.accounts.len()
+    if idx >= configuration.accounts.len()
     {
         println!("The account with the index of ({}) does not exist...", idx);
         return;
@@ -603,20 +583,21 @@ fn select(idx: usize, configuration: &Configuration)
     // Get our account...
     let account = configuration.accounts.get(idx).unwrap();
 
-    // Launch our steam...
-    let attempt = launch_steam(&account, &configuration);
-
-    if attempt.is_err()
-    {
-        println!("Failed to launch Steam...");
-        return;
-    }
-
     // Inform user...
     println!("Launching Steam for user ({})...", account.nickname);
 
-    // Auto-close if enabled...
-    if configuration.auto_close { std::process::exit(0); }
+    // Launch our steam...
+    let attempt = launch_steam(&account, &configuration);
+
+    // Match our attempt
+    match attempt {
+        Ok(_) => {
+            if configuration.auto_close { std::process::exit(0); }
+        },
+        Err(_) => {
+            println!("Failed to launch Steam...");
+        },
+    }
 }
 
 fn get_input() -> String
