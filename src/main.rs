@@ -14,6 +14,7 @@ macro_rules! save {
     }
 }
 
+
 #[cfg(target_os = "macos")]
 use libproc::libproc::proc_pid;
 
@@ -217,9 +218,6 @@ fn find_documents() -> std::result::Result<String, Error>
     Ok(String::from(""))
 }
 
-/**
- * Finds the program files folder.
- */
 #[cfg(windows)]
 fn find_documents() -> std::result::Result<String, Error>
 {
@@ -281,10 +279,6 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
 
     Ok(())
 }
-
-/*
-
- */
 
 #[cfg(windows)]
 fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
@@ -691,13 +685,6 @@ fn start()
     }
 }
 
-#[cfg(windows)]
-fn main()
-{
-    start();
-}
-
-#[cfg(target_os = "macos")]
 fn main()
 {
     start();
