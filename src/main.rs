@@ -288,7 +288,7 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
 #[cfg(windows)]
 fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
 {
-    // Wrapper for CreateProcessA.
+    // Wrapper for CreateProcess.
     let create_process = |arguments: &mut Vec<u16>| -> std::result::Result<(), Error> {
         // Setup our startup information and process information.
         let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
