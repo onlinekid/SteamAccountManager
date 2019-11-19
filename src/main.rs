@@ -25,26 +25,26 @@ use std::io::ErrorKind;
 use libproc::libproc::proc_pid::ProcType;
 
 #[cfg(windows)]
-use std::ffi::CStr;
+use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
-use std::ffi::CString;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::ptr::{null_mut};
 #[cfg(windows)]
 use std::mem;
 
 #[cfg(windows)]
-use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess, PROCESS_INFORMATION, STARTUPINFOA};
+use winapi::um::processthreadsapi::{CreateProcessW, OpenProcess, PROCESS_INFORMATION, STARTUPINFOW};
 #[cfg(windows)]
-use winapi::um::shlobj::{SHGetSpecialFolderPathA, CSIDL_PERSONAL};
+use winapi::um::shlobj::{SHGetSpecialFolderPathW, CSIDL_PERSONAL};
 #[cfg(windows)]
 use winapi::shared::minwindef::{FALSE, MAX_PATH, TRUE};
 #[cfg(windows)]
-use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
+use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
 #[cfg(windows)]
 use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 #[cfg(windows)]
-use winapi::um::psapi::{GetModuleFileNameExA};
+use winapi::um::psapi::{GetModuleFileNameExW};
 #[cfg(windows)]
 use winapi::shared::ntdef::{HANDLE};
 #[cfg(windows)]
@@ -81,15 +81,20 @@ const CONFIGURATION_FILE_NAME: &str = "steam_account_manager.cfg";
 const CONFIGURATION_FILE_NAME: &str = "\\steam_account_manager.cfg";
 
 #[cfg(target_os = "windows")]
-fn convert_to_string(input: *const std::os::raw::c_char) -> String
+fn wide_string_to_string(input: &[u16]) -> String
 {
-    unsafe {
-        let converted_string = CStr::from_ptr(input);
-        let converted_string = converted_string.to_str().unwrap();
-        let converted_string = converted_string.trim_matches(char::from(0));
+    let len = input.iter().take_while(|&&c| c != 0).count();
 
-        converted_string.to_string()
-    }
+    let os: OsString = OsStringExt::from_wide(&input[..len]);
+    os.into_string().unwrap()
+}
+
+#[cfg(target_os = "windows")]
+fn string_to_wide_string(input: String) -> Vec<u16>
+{
+    let input = OsStr::new(&input);
+    let vec: Vec<u16> = input.encode_wide().chain(Some(0)).collect();
+    vec
 }
 
 #[cfg(target_os = "macos")]
@@ -144,23 +149,23 @@ fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
 fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
 {
     // Setup our process entry struct with the correct size...
-    let mut entry: PROCESSENTRY32 = unsafe { mem::zeroed() };
-    entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
+    let mut entry: PROCESSENTRY32W = unsafe { mem::zeroed() };
+    entry.dwSize = mem::size_of::<PROCESSENTRY32W>() as u32;
 
     unsafe {
         // Get our snapshot...
         let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        let mut should_loop = Process32First(snapshot, &mut entry) == TRUE;
+        let mut should_loop = Process32FirstW(snapshot, &mut entry) == TRUE;
 
         // Enumerate through all our processes...
         while should_loop {
             // Get our process name...
-            let process_name = convert_to_string(entry.szExeFile.as_mut_ptr());
+            let process_name = wide_string_to_string(entry.szExeFile.as_ref());
 
             // Continue the loop if it is not Steam...
             if process_name != "Steam.exe"
             {
-                should_loop = Process32Next(snapshot, &mut entry) == TRUE;
+                should_loop = Process32NextW(snapshot, &mut entry) == TRUE;
                 continue;
             }
 
@@ -176,17 +181,17 @@ fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
             // Check if null...
             if process_handle.is_null()
             {
-                should_loop = Process32Next(snapshot, &mut entry) == TRUE;
+                should_loop = Process32NextW(snapshot, &mut entry) == TRUE;
                 continue;
             }
 
             ////////////////////////////////////
 
             // Setup our process path with MAX_PATH (wrong)...
-            let mut process_path = [0i8; MAX_PATH];
+            let mut process_path = [0u16; MAX_PATH];
 
             // Get our module file name...
-            let ret = GetModuleFileNameExA(
+            let ret = GetModuleFileNameExW(
                 process_handle,
                 null_mut(),
                 process_path.as_mut_ptr(),
@@ -200,7 +205,7 @@ fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
             match ret {
                 0 => return Err(Error::last_os_error()),
                 _ => return Ok(SteamProcess {
-                    steam_path: convert_to_string(process_path.as_mut_ptr()),
+                    steam_path: wide_string_to_string(process_path.as_ref()),
                     pid: entry.th32ProcessID
                 })
             }
@@ -221,10 +226,10 @@ fn find_documents() -> std::result::Result<String, Error>
 #[cfg(windows)]
 fn find_documents() -> std::result::Result<String, Error>
 {
-    let mut max_path = [0i8; MAX_PATH];
+    let mut max_path = [0u16; MAX_PATH];
 
     let ret = unsafe {
-        SHGetSpecialFolderPathA(
+        SHGetSpecialFolderPathW(
             null_mut(),
             max_path.as_mut_ptr(),
             CSIDL_PERSONAL,
@@ -234,7 +239,7 @@ fn find_documents() -> std::result::Result<String, Error>
 
     match ret {
         0 => return Err(Error::last_os_error()),
-        _ => return Ok(convert_to_string(max_path.as_mut_ptr()))
+        _ => return Ok(wide_string_to_string(max_path.as_ref()))
     }
 }
 
@@ -284,19 +289,19 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
 fn launch_steam(account: &Account, configuration: &Configuration) -> std::result::Result<(), Error>
 {
     // Wrapper for CreateProcessA.
-    let create_process_a = |arguments: &CString| -> std::result::Result<(), Error> {
+    let create_process = |arguments: &mut Vec<u16>| -> std::result::Result<(), Error> {
         // Setup our startup information and process information.
-        let mut si: STARTUPINFOA = unsafe { mem::zeroed() };
+        let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
         let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
 
         // Update the cb value.
-        si.cb = mem::size_of::<STARTUPINFOA>() as u32;
+        si.cb = mem::size_of::<STARTUPINFOW>() as u32;
 
         // Attempt to create the process...
         let ret = unsafe {
-            CreateProcessA(
+            CreateProcessW(
                 null_mut(),
-                arguments.as_ptr() as *mut i8,
+                arguments.as_mut_ptr(),
                 null_mut(),
                 null_mut(),
                 FALSE,
@@ -323,21 +328,25 @@ fn launch_steam(account: &Account, configuration: &Configuration) -> std::result
     };
 
     // Setup our launch arguments...
-    let shutdown_arguments = CString::new(format!("\"{}\" -shutdown", configuration.steam_path))?;
-    let arguments = CString::new(format!("\"{}\" -login {} {}", configuration.steam_path, account.username, account.password))?;
+    let mut shutdown_arguments = string_to_wide_string(format!("\"{}\" -shutdown", configuration.steam_path));
+    let mut arguments = string_to_wide_string(format!("\"{}\" -login {} {}", configuration.steam_path, account.username, account.password));
+
+    // Resize to correct size.
+    shutdown_arguments.resize(MAX_PATH, 0u16);
+    arguments.resize(MAX_PATH, 0u16);
 
     // Loop until Steam is closed.
     while get_running_steam_process().is_ok() {
         println!("Waiting for Steam to close...");
 
         // Attempt to call Steam with the shutdown argument.
-        create_process_a(&shutdown_arguments)?;
+        create_process(&mut shutdown_arguments)?;
 
         // Sleep for one second.
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    create_process_a(&arguments)
+    create_process(&mut arguments)
 }
 
 fn first_time_setup(configuration: Option<&mut Configuration>) -> Result<Option<Configuration>, Error>
