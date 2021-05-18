@@ -100,7 +100,7 @@ fn string_to_wide_string(input: String) -> Vec<u16>
 #[cfg(target_os = "macos")]
 fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
 {
-    // Attempt to find all pids...
+    // Attempt to find all pids.
     let pids = proc_pid::listpids(ProcType::ProcAllPIDS);
 
     if pids.is_err()
@@ -124,7 +124,7 @@ fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
         let process_path = process_path.unwrap();
 
         // Attempt to find steam_osx...
-        if process_name == "steam_osx"
+        if process_name.to_lowercase() == "steam_osx"
         {
             // Parse and format Steam's path...
             let process_path = process_path.replace("Contents/MacOS/steam_osx", "Contents/MacOS/Steam.app/Contents/MacOS/steam_osx");
@@ -163,7 +163,7 @@ fn get_running_steam_process() -> std::result::Result<SteamProcess, Error>
             let process_name = wide_string_to_string(entry.szExeFile.as_ref());
 
             // Continue the loop if it is not Steam...
-            if process_name != "Steam.exe"
+            if process_name.to_lowercase() != "steam.exe"
             {
                 should_loop = Process32NextW(snapshot, &mut entry) == TRUE;
                 continue;
